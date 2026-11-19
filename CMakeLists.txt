@@ -9,6 +9,11 @@ add_executable(main main.cpp)
 target_compile_features(main PUBLIC cxx_std_17)
 target_link_libraries(main lacam2 argparse)
 
+# benchmark on MovingAI scenarios with random waypoints
+add_executable(benchmark bench/benchmark.cpp)
+target_compile_features(benchmark PUBLIC cxx_std_17)
+target_link_libraries(benchmark lacam2 argparse)
+
 # test
 set(TEST_MAIN_FUNC ./third_party/googletest/googletest/src/gtest_main.cc)
 file(GLOB TEST_FILES "./tests/test_*.cpp")

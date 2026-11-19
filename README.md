@@ -62,41 +62,57 @@ You can find details of all parameters with:
 build/main --help
 ```
 
+## Waypoint sequences
+
+Each agent can visit an ordered sequence of waypoints; the last one is its final goal.
+The high-level search state becomes `(Q, K)`: the configuration `Q` plus, for each agent, the index `K[i]` of its next waypoint.
+
+From a file, one agent per line, `sx sy x1 y1 x2 y2 ...` (see `assets/waypoints-depot.wp`):
+
+```sh
+> build/main -m assets/empty-8-8.map -w assets/waypoints-depot.wp -N 1 -v 1
+solved: 0ms     makespan: 6 (lb=6, ub=1)        sum_of_costs: 6 (lb=6, ub=1)    sum_of_loss: 6 (lb=6, ub=1)
+```
+
+Random instances with `M` waypoints per agent (`--wp_depot` adds the return to the start location):
+
+```sh
+> build/main -m assets/random-32-32-20.map -N 50 -W 4 --wp_depot -v 1
+```
+
+Options:
+- `--wp_priority_reset each|final` (default `each`): the PIBT priority is reset at every reached waypoint, or only when the whole sequence is completed.
+- `--objective 1|2`: makespan or sum-of-loss (as in LaCAM* but for the whole sequence).
+
+The output file has an additional `waypoints=` line, `(x,y);(x,y)|...` per agent.
+
+
+## Temporal constraints (STN)
+
+With `--stn FILE` (together with `-w`), waypoints are linked by a Simple Temporal Network, with precedence constraints and absolute max delays.
+An event `(i, k)` is the instant agent `i` registers its `k`-th intermediate waypoint (the final one has no event).
+It is triggered at the first instant the agent is on the waypoint with its window open and all the events that must precede it fired; an agent arriving early waits, on the cell or elsewhere.
+
+```
+# lb <= t_b - t_a <= ub, timepoint 0 is the origin (time 0), '-' unbounded
+timepoints 3
+0 0        # 1: agent 0, waypoint 0
+-1 0       # 2: free timepoint (e.g., an operation), projected away
+1 0        # 3: agent 1, waypoint 0
+constraints 3
+1 2 2 -
+2 3 1 -    # agent 1 registers its waypoint at least 3 steps after agent 0
+0 3 - 40   # ... and by time 40
+```
+
+- Supported: lower bounds between events, absolute windows. 
+- The search state is `(Q, K, W)`, where `W` holds the windows of the pending events relative to the current time step.
+- The output file has an additional `events=` line, the time each waypoint is registered, `t;t;...|...` per agent.
+
+
 ## Visualizer
 
 This repository is compatible with [@Kei18/mapf-visualizer](https://github.com/kei18/mapf-visualizer).
-
-## Experiments
-
-[![v0.1](https://img.shields.io/badge/tag-v0.1-blue.svg?style=flat)](https://github.com/Kei18/lacam2/releases/tag/v0.1)
-
-The experimental script is written in Julia ≥1.7.
-Setup may require around 10 minutes.
-
-```sh
-sh scripts/setup.sh
-```
-
-Edit the config file as you like.
-Examples are in `scripts/config` .
-The evaluation starts by following commands.
-
-```
-julia --project=scripts/ --threads=auto
-> include("scripts/eval.jl"); main("scripts/config/mapf-bench.yaml")
-```
-
-LaCAM* variants are available in [tags](https://github.com/Kei18/lacam2/tags).
-
-## Notes
-
-- The grid maps and scenarios in `assets/` are from [MAPF benchmarks](https://movingai.com/benchmarks/mapf.html).
-- `tests/` is not comprehensive. It was used in early developments.
-- Auto formatting (clang-format) when committing:
-
-```sh
-git config core.hooksPath .githooks && chmod a+x .githooks/pre-commit
-```
 
 ## Licence
 

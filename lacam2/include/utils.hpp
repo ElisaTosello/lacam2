@@ -9,11 +9,13 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <queue>
 #include <random>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <stack>
 #include <string>
 #include <tuple>

@@ -7,11 +7,24 @@
 #include "dist_table.hpp"
 #include "graph.hpp"
 #include "instance.hpp"
+#include "stn.hpp"
 #include "utils.hpp"
 
 // objective function
 enum Objective { OBJ_NONE, OBJ_MAKESPAN, OBJ_SUM_OF_LOSS };
 std::ostream& operator<<(std::ostream& os, const Objective objective);
+
+// when the PIBT priority of an agent with waypoints is reset
+enum PriorityReset {
+  WP_RESET_FINAL,  // only when the whole sequence is completed
+  WP_RESET_EACH    // also when reaching each intermediate waypoint
+};
+std::ostream& operator<<(std::ostream& os, const PriorityReset reset);
+
+// hash of a high-level search state: locations, waypoint progress and
+// time windows
+uint hash_state(const Config& C, const std::vector<uint>& K,
+                const Windows& W = Windows());
 
 // PIBT agent
 struct Agent {
@@ -22,12 +35,17 @@ struct Agent {
 };
 using Agents = std::vector<Agent*>;
 
-// low-level node
+// low-level node: constraint "agent who goes to where", plus the constraints
+// of its ancestors; ancestors are shared, so the memory per node is constant
+// instead of O(depth)
+struct LNode;
+using LNodePtr = std::shared_ptr<LNode>;
 struct LNode {
-  std::vector<uint> who;
-  Vertices where;
+  const LNodePtr parent;
+  const uint who;
+  Vertex* const where;
   const uint depth;
-  LNode(LNode* parent = nullptr, uint i = 0,
+  LNode(LNodePtr _parent = nullptr, uint i = 0,
         Vertex* v = nullptr);  // who and where
 };
 
@@ -35,6 +53,8 @@ struct LNode {
 struct HNode {
   static uint HNODE_CNT;  // count #(high-level node)
   const Config C;
+  const std::vector<uint> K;  // waypoint progress, see advance_K
+  const Windows W;            // time windows, see advance_state
 
   // tree
   HNode* parent;
@@ -48,13 +68,25 @@ struct HNode {
   // for low-level search
   std::vector<float> priorities;
   std::vector<uint> order;
-  std::queue<LNode*> search_tree;
+  std::queue<LNodePtr> search_tree;
 
-  HNode(const Config& _C, DistTable& D, HNode* _parent, const uint _g,
-        const uint _h);
+  HNode(const Config& _C, const std::vector<uint>& _K, const Windows& _W,
+        const Instance* ins, DistTable& D, HNode* _parent, const uint _g,
+        const uint _h, const PriorityReset reset = WP_RESET_EACH);
   ~HNode();
 };
 using HNodes = std::vector<HNode*>;
+
+// explored high-level nodes, keyed by (C, K, W)
+// the key is not copied: candidates with the same hash are compared with the
+// node's own C and K, which halves the memory per node for large N
+struct Explored {
+  std::unordered_multimap<uint, HNode*> table;  // hash -> node
+  HNode* find(const Config& C, const std::vector<uint>& K, const Windows& W,
+              uint hash) const;
+  void insert(HNode* H, uint hash) { table.emplace(hash, H); }
+  size_t size() const { return table.size(); }
+};
 
 struct Planner {
   const Instance* ins;
@@ -65,12 +97,17 @@ struct Planner {
   // hyper parameters
   const Objective objective;
   const float RESTART_RATE;  // random restart
+  const PriorityReset WP_RESET;
 
   // solver utils
   const uint N;       // number of agents
   const uint V_size;  // number o vertices
   DistTable D;
   uint loop_cnt;      // auxiliary
+  // anytime profile: "elapsed_ms:cost:makespan" at the first solution and at
+  // each improvement, reported in additional_info as "anytime=..."
+  std::string anytime_log;
+  void log_anytime(HNode* H_goal);
 
   // used in PIBT
   std::vector<std::array<Vertex*, 5> > C_next;  // next locations, used in PIBT
@@ -78,21 +115,41 @@ struct Planner {
   Agents A;
   Agents occupied_now;                          // for quick collision checking
   Agents occupied_next;                         // for quick collision checking
+  const std::vector<uint>* K_cur;  // waypoint progress of the expanded node
+  std::vector<uint> slot_cur;      // DistTable slot of the current waypoints
+  const std::vector<uint> K_last;  // m_i - 1, i.e., heading to final goal
 
   Planner(const Instance* _ins, const Deadline* _deadline, std::mt19937* _MT,
           const int _verbose = 0,
           // other parameters
           const Objective _objective = OBJ_NONE,
-          const float _restart_rate = 0.001);
+          const float _restart_rate = 0.001,
+          const PriorityReset _wp_reset = WP_RESET_EACH);
   ~Planner();
   Solution solve(std::string& additional_info);
-  void expand_lowlevel_tree(HNode* H, LNode* L);
+  void expand_lowlevel_tree(HNode* H, const LNodePtr& L);
   void rewrite(HNode* H_from, HNode* T, HNode* H_goal,
                std::stack<HNode*>& OPEN);
-  uint get_edge_cost(const Config& C1, const Config& C2);
+  uint get_edge_cost(HNode* H_from, const Config& C2);
   uint get_edge_cost(HNode* H_from, HNode* H_to);
-  uint get_h_value(const Config& C);
-  bool get_new_config(HNode* H, LNode* L);
+  uint get_h_value(const Config& C, const std::vector<uint>& K,
+                   const Windows& W);
+  // with STN deadlines: every agent can still meet them (lookahead)
+  bool meets_deadlines(const Config& C, const std::vector<uint>& K,
+                       const Windows& W);
+  bool is_goal(const Config& C, const std::vector<uint>& K) const;
+  // agent i completed its sequence and stays at its final goal v
+  inline bool is_done_at(uint i, Vertex* v) const
+  {
+    return (*K_cur)[i] == K_last[i] && ins->goals[i] == v;
+  }
+  // distance to the current waypoint, used to rank moves in PIBT
+  inline uint dist_cur(uint i, Vertex* v)
+  {
+    return D.get_slot(slot_cur[i], v->id);
+  }
+  bool get_new_config(HNode* H, const LNodePtr& L);
+  std::vector<LNode*> L_chain;  // constraints of a low-level node, root first
   bool funcPIBT(Agent* ai);
 
   // swap operation

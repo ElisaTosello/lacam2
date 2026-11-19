@@ -1,0 +1,3 @@
+﻿# Waypoint instance, one agent per line: sx sy x1 y1 x2 y2 ...
+# Example: depot D=(0,0) -> X=(0,3) -> back to D
+0 0 0 3 0 0
