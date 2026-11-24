@@ -23,6 +23,14 @@ int get_sum_of_loss(const Solution& solution);
 int get_sum_of_loss(const Instance& ins, const Solution& solution);
 int get_makespan_lower_bound(const Instance& ins, DistTable& D);
 int get_sum_of_costs_lower_bound(const Instance& ins, DistTable& D);
+// lower bound on the time each agent completes its sequence: shortest paths
+// between its waypoints, ignoring the other agents, plus the waits imposed by
+// the temporal constraints (earliest firing time of every event, including
+// the precedences between agents). Their sum bounds the sum of costs and the
+// sum of loss, their maximum the makespan; without STN, they are the bounds
+// above.
+std::vector<int> get_completion_lower_bounds(const Instance& ins,
+                                             DistTable& D);
 void print_stats(const int verbose, const Instance& ins,
                  const Solution& solution, const double comp_time_ms);
 void make_log(const Instance& ins, const Solution& solution,

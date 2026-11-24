@@ -35,14 +35,24 @@ void info(const int level, const int verbose, Head&& head, Tail&&... tail)
 }
 
 // time manager
+// is_expired: the time limit is reached or, with mem_limit_mb > 0, the
+// virtual memory of the process exceeds it (sampled every MEM_CHECK_PERIOD
+// calls); then memory_exceeded tells which
 struct Deadline {
+  static constexpr unsigned int MEM_CHECK_PERIOD = 1024;
   const Time::time_point t_s;
   const double time_limit_ms;
+  const double mem_limit_mb;  // 0: no limit
+  mutable unsigned int calls;
+  mutable bool memory_exceeded;
 
-  Deadline(double _time_limit_ms = 0);
+  Deadline(double _time_limit_ms = 0, double _mem_limit_mb = 0);
   double elapsed_ms() const;
   double elapsed_ns() const;
 };
+
+// virtual memory of the process [MB], 0 if unknown (/proc/self/statm)
+double get_memory_mb();
 
 double elapsed_ms(const Deadline* deadline);
 double elapsed_ns(const Deadline* deadline);

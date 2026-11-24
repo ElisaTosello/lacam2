@@ -80,6 +80,14 @@ TEST(STN, cross_robot_precedence)
   ASSERT_EQ(times[1][0], 6);  // arrived at t=2, waits for A
   ASSERT_EQ(get_makespan(sol), 8);
 
+  // the lower bounds from the travel times and the absolute windows know that
+  // B fires at 3 at the earliest (A at 0 at the earliest, plus 3), not at 6
+  // (A arrives at 3); the ones with the temporal constraints do
+  auto D = DistTable(ins);
+  ASSERT_EQ(get_makespan_lower_bound(ins, D), 6);
+  ASSERT_EQ(get_sum_of_costs_lower_bound(ins, D), 6 + 5);
+  ASSERT_EQ(get_completion_lower_bounds(ins, D), std::vector<int>({6, 8}));
+
   // same constraint through a free timepoint (e.g., an operation)
   ins.stn = make_stn(ins,
                      "timepoints 3\n0 0\n-1 0\n1 0\n"
@@ -91,6 +99,42 @@ TEST(STN, cross_robot_precedence)
   const auto sol2 =
       solve(ins, info2, 0, nullptr, nullptr, Objective::OBJ_MAKESPAN);
   ASSERT_EQ(replay_events(ins, sol2)[1][0], 6);
+}
+
+// agent 0 waits for agent 1, then agent 2 for agent 0: the earliest firing
+// times need more than one pass over the agents
+TEST(STN, completion_lower_bounds)
+{
+  auto ins = make_ins({xy(0, 0), xy(7, 7), xy(0, 7)},
+                      {{xy(3, 0), xy(0, 0)},
+                       {xy(7, 5), xy(7, 7)},
+                       {xy(0, 6), xy(0, 7)}});
+  // t(0,0) >= t(1,0) + 3, t(2,0) >= t(0,0)
+  ins.stn = make_stn(ins,
+                     "timepoints 3\n1 0\n0 0\n2 0\n"
+                     "constraints 2\n1 2 3 -\n2 3 0 -\n");
+  ASSERT_TRUE(ins.stn->valid) << ins.stn->error;
+  auto D = DistTable(ins);
+  // agent 1 fires at 2, agent 0 at 5 (arrived at 3), agent 2 at 5 (at 1)
+  const auto C = get_completion_lower_bounds(ins, D);
+  ASSERT_EQ(C, std::vector<int>({8, 4, 6}));
+
+  auto info = std::string();
+  const auto sol =
+      solve(ins, info, 0, nullptr, nullptr, Objective::OBJ_MAKESPAN);
+  ASSERT_TRUE(is_feasible_solution(ins, sol, 1));
+  ASSERT_EQ(get_makespan(sol), 8);  // the bound is tight
+  for (uint i = 0; i < ins.N; ++i)
+    ASSERT_GE(get_path_cost(sol, i), C[i]);
+  ASSERT_GE(get_sum_of_loss(ins, sol), 8 + 4 + 6);
+
+  // without STN, the usual lower bounds
+  ins.stn = nullptr;
+  auto D2 = DistTable(ins);
+  const auto C2 = get_completion_lower_bounds(ins, D2);
+  ASSERT_EQ(C2, std::vector<int>({6, 4, 2}));
+  ASSERT_EQ(get_sum_of_costs_lower_bound(ins, D2), 6 + 4 + 2);
+  ASSERT_EQ(get_makespan_lower_bound(ins, D2), 6);
 }
 
 TEST(STN, deadlines)

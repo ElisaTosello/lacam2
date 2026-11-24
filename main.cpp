@@ -43,6 +43,11 @@ int main(int argc, char* argv[])
   program.add_argument("-t", "--time_limit_sec")
       .help("time limit sec")
       .default_value(std::string("3"));
+  program.add_argument("--mem_limit_mb")
+      .help(
+          "stop the search, as with the time limit, when the virtual memory "
+          "of the process exceeds this [MB]; 0: no limit")
+      .default_value(std::string("0"));
   program.add_argument("-o", "--output")
       .help("output file")
       .default_value(std::string("./build/result.txt"));
@@ -116,7 +121,8 @@ int main(int argc, char* argv[])
 
   // solve
   auto additional_info = std::string("");
-  const auto deadline = Deadline(time_limit_sec * 1000);
+  const auto mem_limit_mb = std::stod(program.get<std::string>("mem_limit_mb"));
+  const auto deadline = Deadline(time_limit_sec * 1000, mem_limit_mb);
   const auto solution = solve(ins, additional_info, verbose - 1, &deadline, &MT,
                               objective, restart_rate, wp_reset);
   const auto comp_time_ms = deadline.elapsed_ms();

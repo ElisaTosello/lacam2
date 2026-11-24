@@ -237,11 +237,22 @@ Solution Planner::solve(std::string& additional_info)
     solver_info(1, "solved sub-optimally, objective: ", objective);
   } else if (OPEN.empty()) {
     solver_info(1, "no solution");
+  } else if (deadline != nullptr && deadline->memory_exceeded) {
+    solver_info(1, "memory limit");
   } else {
     solver_info(1, "timeout");
   }
 
+  // why the search ended: search space exhausted, first solution (no
+  // objective), memory limit or time limit
+  const auto stopped =
+      OPEN.empty()                                     ? "complete"
+      : (H_goal != nullptr && objective == OBJ_NONE)   ? "first_solution"
+      : (deadline != nullptr && deadline->memory_exceeded) ? "memory"
+                                                           : "time";
+
   // logging
+  additional_info += "stopped=" + std::string(stopped) + "\n";
   additional_info +=
       "optimal=" + std::to_string(H_goal != nullptr && OPEN.empty()) + "\n";
   additional_info += "objective=" + std::to_string(objective) + "\n";

@@ -1,10 +1,24 @@
 #include "../include/utils.hpp"
 
+#include <unistd.h>
+
 void info(const int level, const int verbose) { std::cout << std::endl; }
 
-Deadline::Deadline(double _time_limit_ms)
-    : t_s(Time::now()), time_limit_ms(_time_limit_ms)
+Deadline::Deadline(double _time_limit_ms, double _mem_limit_mb)
+    : t_s(Time::now()),
+      time_limit_ms(_time_limit_ms),
+      mem_limit_mb(_mem_limit_mb),
+      calls(0),
+      memory_exceeded(false)
 {
+}
+
+double get_memory_mb()
+{
+  std::ifstream file("/proc/self/statm");
+  long long pages = 0;
+  if (!(file >> pages)) return 0;
+  return (double)pages * sysconf(_SC_PAGESIZE) / (1 << 20);
 }
 
 double Deadline::elapsed_ms() const
@@ -35,6 +49,13 @@ double elapsed_ns(const Deadline* deadline)
 bool is_expired(const Deadline* deadline)
 {
   if (deadline == nullptr) return false;
+  if (deadline->memory_exceeded) return true;
+  if (deadline->mem_limit_mb > 0 &&
+      ++deadline->calls % Deadline::MEM_CHECK_PERIOD == 0 &&
+      get_memory_mb() > deadline->mem_limit_mb) {
+    deadline->memory_exceeded = true;
+    return true;
+  }
   return deadline->elapsed_ms() > deadline->time_limit_ms;
 }
 

@@ -108,6 +108,7 @@ constraints 3
 - Supported: lower bounds between events, absolute windows. 
 - The search state is `(Q, K, W)`, where `W` holds the windows of the pending events relative to the current time step.
 - The output file has an additional `events=` line, the time each waypoint is registered, `t;t;...|...` per agent.
+- `soc_lb_stn` and `makespan_lb_stn` in the output file are lower bounds that include the waits imposed by the STN (earliest firing time of every event, precedences between agents included), unlike `soc_lb` and `makespan_lb`; without STN they are equal.
 
 
 ## Visualizer

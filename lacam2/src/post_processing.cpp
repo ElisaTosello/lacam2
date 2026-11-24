@@ -200,6 +200,46 @@ int get_sum_of_costs_lower_bound(const Instance& ins, DistTable& dist_table)
   return c;
 }
 
+std::vector<int> get_completion_lower_bounds(const Instance& ins,
+                                             DistTable& dist_table)
+{
+  const auto S = ins.stn.get();  // nullptr: no temporal constraint
+  const long long INF = TemporalNetwork::INF;
+  // earliest firing time of each event (origin: 0), raised until a fixed
+  // point; it is reached since the network is consistent, i.e., it has no
+  // positive cycle
+  auto est = std::vector<long long>(S != nullptr ? S->E : 0, 0);
+  auto C = std::vector<int>(ins.N, 0);
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (uint i = 0; i < ins.N; ++i) {
+      long long tau = 0;
+      auto pos = ins.starts[i];
+      for (uint k = 0; k < ins.m(i); ++k) {
+        tau += dist_table.get_wp(i, k, pos);  // arrival at waypoint k
+        pos = ins.waypoints[i][k];
+        const int e =
+            (S != nullptr && k + 1 < ins.m(i)) ? S->event_of[i][k] : -1;
+        if (e <= 0) continue;
+        // it waits there until t_e >= t_x - D[e][x] for every timepoint x:
+        // precedences, delays, release times (x = origin)
+        for (uint x = 0; x < S->E; ++x) {
+          if ((int)x != e && S->D[e][x] < INF)
+            tau = std::max(tau, est[x] - S->D[e][x]);
+        }
+        tau = std::max(tau, est[e]);
+        if (tau > est[e]) {
+          est[e] = tau;
+          changed = true;
+        }
+      }
+      C[i] = tau;
+    }
+  }
+  return C;
+}
+
 void print_stats(const int verbose, const Instance& ins,
                  const Solution& solution, const double comp_time_ms)
 {
@@ -251,6 +291,18 @@ void make_log(const Instance& ins, const Solution& solution,
   log << "sum_of_loss=" << get_sum_of_loss(ins, solution) << "\n";
   log << "sum_of_loss_lb=" << get_sum_of_costs_lower_bound(ins, dist_table)
       << "\n";
+  {
+    // also with the waits imposed by the temporal constraints
+    const auto C = get_completion_lower_bounds(ins, dist_table);
+    long long soc = 0;
+    int makespan = 0;
+    for (auto c : C) {
+      soc += c;
+      makespan = std::max(makespan, c);
+    }
+    log << "soc_lb_stn=" << soc << "\n";
+    log << "makespan_lb_stn=" << makespan << "\n";
+  }
   log << "comp_time=" << comp_time_ms << "\n";
   log << "seed=" << seed << "\n";
   log << additional_info;
