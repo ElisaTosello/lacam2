@@ -86,6 +86,15 @@ int event_release(const Instance& ins, const std::vector<uint>& K,
 uint time_to_go(const Instance& ins, DistTable& D, const std::vector<uint>& K,
                 const Windows& W, uint i, Vertex* v);
 
+// latest time at which agent i can register its k-th waypoint, dl[i][k], so
+// that every agent completes its sequence by 'target' (dl[i][m_i - 1] =
+// target): backward propagation of target through the travel times between
+// consecutive waypoints and the STN (absolute deadlines included). Without
+// STN, dl[i][k] = target - rem[i][k]. Used for the slack-based priorities.
+std::vector<std::vector<int> > waypoint_deadlines(const Instance& ins,
+                                                  DistTable& D,
+                                                  const int target);
+
 // drop the lower bounds of W implied by the travel times (they cannot bind):
 // states differing only by them have the same future, merging them keeps the
 // state space small and lets EXPLORED detect cycles

@@ -380,6 +380,59 @@ uint time_to_go(const Instance& ins, DistTable& D, const std::vector<uint>& K,
   return lookahead(ins, D, K, const_cast<Windows&>(W), i, v, false);
 }
 
+std::vector<std::vector<int> > waypoint_deadlines(const Instance& ins,
+                                                  DistTable& D,
+                                                  const int target)
+{
+  const auto S = ins.stn.get();  // nullptr: travel times only
+  const long long INF = TemporalNetwork::INF;
+  const uint E = S != nullptr ? S->E : 0;
+  auto event = [&](uint i, uint k) {
+    return (S != nullptr && k + 1 < ins.m(i)) ? S->event_of[i][k] : -1;
+  };
+
+  // shortest paths from the end in the distance graph: t <= target for
+  // every timepoint, t_b <= t_a + D[a][b], t_k <= t_{k+1} - dist(w_k, w_k+1)
+  auto dl = std::vector<std::vector<int> >(ins.N);
+  auto lst = std::vector<long long>(E, target);
+  for (uint e = 1; e < E; ++e) lst[e] = std::min(lst[e], (long long)S->D[0][e]);
+  uint rounds = E + 1;
+  for (uint i = 0; i < ins.N; ++i) rounds += ins.m(i);
+
+  bool changed = true;
+  while (changed && rounds-- > 0) {
+    changed = false;
+    // (a) travel times, backward along each sequence
+    for (uint i = 0; i < ins.N; ++i) {
+      const auto m = ins.m(i);
+      dl[i].assign(m, target);
+      for (int k = (int)m - 2; k >= 0; --k) {
+        long long d = dl[i][k + 1] - (long long)D.get_wp(i, k + 1,
+                                                          ins.waypoints[i][k]);
+        const auto e = event(i, k);
+        if (e > 0) {
+          if (d < lst[e]) {
+            lst[e] = d;
+            changed = true;
+          }
+          d = lst[e];
+        }
+        dl[i][k] = (int)d;
+      }
+    }
+    // (b) STN, the minimal network is already closed: one pass per round
+    for (uint a = 1; a < E; ++a)
+      for (uint b = 1; b < E; ++b) {
+        if (a == b || S->D[a][b] >= INF) continue;
+        if (lst[a] + S->D[a][b] < lst[b]) {
+          lst[b] = lst[a] + S->D[a][b];
+          changed = true;
+        }
+      }
+  }
+  return dl;
+}
+
 void prune_windows(const Instance& ins, DistTable& D, const Config& C,
                    const std::vector<uint>& K, Windows& W)
 {

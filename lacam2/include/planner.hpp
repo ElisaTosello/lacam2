@@ -21,6 +21,16 @@ enum PriorityReset {
 };
 std::ostream& operator<<(std::ostream& os, const PriorityReset reset);
 
+// how the PIBT order of the agents is set
+enum PriorityMode {
+  PRIO_DIST,  // distance to go, elevated by one per step (PIBT)
+  PRIO_SLACK,  // slack w.r.t. the deadlines from a target makespan, see HNode
+  // as PRIO_SLACK, the earliest arrival also waits for the release of the
+  // next event (window lo), when known
+  PRIO_SLACK_RELEASE
+};
+std::ostream& operator<<(std::ostream& os, const PriorityMode mode);
+
 // hash of a high-level search state: locations, waypoint progress and
 // time windows
 uint hash_state(const Config& C, const std::vector<uint>& K,
@@ -59,6 +69,7 @@ struct HNode {
   // tree
   HNode* parent;
   std::set<HNode*> neighbor;
+  const uint t;  // time step when created, i.e., depth of the first parent
 
   // costs
   uint g;        // g-value (might be updated)
@@ -70,9 +81,17 @@ struct HNode {
   std::vector<uint> order;
   std::queue<LNodePtr> search_tree;
 
+  // deadlines (waypoint_deadlines) != nullptr: slack-based order, agents by
+  // increasing slack(i) = dl[i][K[i]] - (t + dist(C[i], next waypoint)),
+  // ties by the order of the parent, agents done last; reset is ignored.
+  // With release, the distance is max(distance, event_release) unless a
+  // predecessor of another agent has not fired (release unknown).
+  // Otherwise distance-based PIBT priorities.
   HNode(const Config& _C, const std::vector<uint>& _K, const Windows& _W,
         const Instance* ins, DistTable& D, HNode* _parent, const uint _g,
-        const uint _h, const PriorityReset reset = WP_RESET_EACH);
+        const uint _h, const PriorityReset reset = WP_RESET_EACH,
+        const std::vector<std::vector<int> >* deadlines = nullptr,
+        const bool release = false);
   ~HNode();
 };
 using HNodes = std::vector<HNode*>;
@@ -98,12 +117,17 @@ struct Planner {
   const Objective objective;
   const float RESTART_RATE;  // random restart
   const PriorityReset WP_RESET;
+  const PriorityMode PRIORITY;
 
   // solver utils
   const uint N;       // number of agents
   const uint V_size;  // number o vertices
   DistTable D;
   uint loop_cnt;      // auxiliary
+  // PRIO_SLACK: target makespan, max of the completion lower bounds, and
+  // the deadline of each waypoint w.r.t. it (computed once)
+  int target_makespan;
+  std::vector<std::vector<int> > wp_deadline;
   // anytime profile: "elapsed_ms:cost:makespan" at the first solution and at
   // each improvement, reported in additional_info as "anytime=..."
   std::string anytime_log;
@@ -124,7 +148,8 @@ struct Planner {
           // other parameters
           const Objective _objective = OBJ_NONE,
           const float _restart_rate = 0.001,
-          const PriorityReset _wp_reset = WP_RESET_EACH);
+          const PriorityReset _wp_reset = WP_RESET_EACH,
+          const PriorityMode _priority = PRIO_DIST);
   ~Planner();
   Solution solve(std::string& additional_info);
   void expand_lowlevel_tree(HNode* H, const LNodePtr& L);

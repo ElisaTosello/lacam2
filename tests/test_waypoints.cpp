@@ -144,7 +144,10 @@ TEST(Waypoints, random_instances)
     for (uint N : {10, 30}) {
       for (uint m : {2, 4}) {
         for (bool depot : {false, true}) {
-          for (auto reset : {WP_RESET_FINAL, WP_RESET_EACH}) {
+          for (auto [reset, prio] :
+               {std::pair(WP_RESET_FINAL, PRIO_DIST),
+                std::pair(WP_RESET_EACH, PRIO_DIST),
+                std::pair(WP_RESET_EACH, PRIO_SLACK)}) {  // slack: no reset
             auto MT = std::mt19937(seed);
             const auto ins = Instance(map, &MT, N, m, depot);
             ASSERT_TRUE(ins.is_valid());
@@ -157,10 +160,11 @@ TEST(Waypoints, random_instances)
             auto info = std::string();
             const auto deadline = Deadline(5000);
             const auto sol = solve(ins, info, 0, &deadline, &MT, OBJ_NONE,
-                                   0.001, reset);
+                                   0.001, reset, prio);
             ASSERT_FALSE(sol.empty())
                 << "seed=" << seed << " N=" << N << " m=" << m
-                << " depot=" << depot << " reset=" << reset;
+                << " depot=" << depot << " reset=" << reset
+                << " priority=" << prio;
             ASSERT_TRUE(is_feasible_solution(ins, sol));
           }
         }

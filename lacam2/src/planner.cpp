@@ -1,5 +1,7 @@
 #include "../include/planner.hpp"
 
+#include "../include/post_processing.hpp"
+
 LNode::LNode(LNodePtr _parent, uint i, Vertex* v)
     : parent(_parent),
       who(i),
@@ -33,12 +35,15 @@ uint HNode::HNODE_CNT = 0;
 HNode::HNode(const Config& _C, const std::vector<uint>& _K,
              const Windows& _W, const Instance* ins, DistTable& D,
              HNode* _parent, const uint _g, const uint _h,
-             const PriorityReset reset)
+             const PriorityReset reset,
+             const std::vector<std::vector<int> >* deadlines,
+             const bool release)
     : C(_C),
       K(_K),
       W(_W),
       parent(_parent),
       neighbor(),
+      t(_parent == nullptr ? 0 : _parent->t + 1),
       g(_g),
       h(_h),
       f(g + h),
@@ -53,6 +58,34 @@ HNode::HNode(const Config& _C, const std::vector<uint>& _K,
 
   // update neighbor
   if (parent != nullptr) parent->neighbor.insert(this);
+
+  // slack-based order: deadline of the next waypoint minus the earliest
+  // arrival there; t is common to all the agents, it does not change the order
+  if (deadlines != nullptr) {
+    const float DONE = -1e9;  // agents done: last
+    for (uint i = 0; i < N; ++i) {
+      const bool done = ins->intermediates_done(K, i) && C[i] == ins->goals[i];
+      int to_go = D.get_wp(i, K[i], C[i]);
+      if (release) {
+        // the event cannot fire before its window opens; INF: blocked by a
+        // predecessor of another agent, release unknown, distance only
+        const auto r = event_release(*ins, K, W, i);
+        if (r < TemporalNetwork::INF) to_go = std::max(to_go, r);
+      }
+      const int slack = (*deadlines)[i][K[i]] - ((int)t + to_go);
+      priorities[i] = done ? DONE : -(float)slack;
+    }
+    // ties: order of the parent, agent index at the root
+    auto rank = std::vector<uint>(N);
+    for (uint r = 0; r < N; ++r)
+      rank[parent != nullptr ? parent->order[r] : r] = r;
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](uint i, uint j) {
+      if (priorities[i] != priorities[j]) return priorities[i] > priorities[j];
+      return rank[i] < rank[j];
+    });
+    return;
+  }
 
   // set priorities
   if (parent == nullptr) {
@@ -93,7 +126,8 @@ HNode::~HNode()
 Planner::Planner(const Instance* _ins, const Deadline* _deadline,
                  std::mt19937* _MT, const int _verbose,
                  const Objective _objective, const float _restart_rate,
-                 const PriorityReset _wp_reset)
+                 const PriorityReset _wp_reset,
+                 const PriorityMode _priority)
     : ins(_ins),
       deadline(_deadline),
       MT(_MT),
@@ -101,10 +135,12 @@ Planner::Planner(const Instance* _ins, const Deadline* _deadline,
       objective(_objective),
       RESTART_RATE(_restart_rate),
       WP_RESET(_wp_reset),
+      PRIORITY(_priority),
       N(ins->N),
       V_size(ins->G.size()),
       D(DistTable(ins)),
       loop_cnt(0),
+      target_makespan(0),
       C_next(N),
       tie_breakers(V_size, 0),
       A(N, nullptr),
@@ -118,6 +154,12 @@ Planner::Planner(const Instance* _ins, const Deadline* _deadline,
         return K;
       }())
 {
+  if (PRIORITY != PRIO_DIST) {
+    // target makespan: the agents cannot complete earlier, even alone
+    const auto C = get_completion_lower_bounds(*ins, D);
+    for (auto c : C) target_makespan = std::max(target_makespan, c);
+    wp_deadline = waypoint_deadlines(*ins, D, target_makespan);
+  }
 }
 
 Planner::~Planner() {}
@@ -141,9 +183,13 @@ Solution Planner::solve(std::string& additional_info)
   bool init_alive = initial_state(*ins, K_init, W_init);
   prune_windows(*ins, D, ins->starts, K_init, W_init);
   init_alive = init_alive && meets_deadlines(ins->starts, K_init, W_init);
+  // deadlines for the slack-based order, nullptr: distance-based
+  const auto deadlines = PRIORITY != PRIO_DIST ? &wp_deadline : nullptr;
+  const bool release = PRIORITY == PRIO_SLACK_RELEASE;
   auto H_init =
       new HNode(ins->starts, K_init, W_init, ins, D, nullptr, 0,
-                get_h_value(ins->starts, K_init, W_init), WP_RESET);
+                get_h_value(ins->starts, K_init, W_init), WP_RESET, deadlines,
+                release);
   if (init_alive) OPEN.push(H_init);  // otherwise, no solution
   EXPLORED.insert(H_init, hash_state(H_init->C, H_init->K, H_init->W));
 
@@ -214,7 +260,7 @@ Solution Planner::solve(std::string& additional_info)
       // insert new search node
       const auto H_new = new HNode(
           C_new, K_new, W_new, ins, D, H, H->g + get_edge_cost(H, C_new),
-          get_h_value(C_new, K_new, W_new), WP_RESET);
+          get_h_value(C_new, K_new, W_new), WP_RESET, deadlines, release);
       EXPLORED.insert(H_new, hash_new);
       if (H_goal == nullptr || H_new->f < H_goal->f) OPEN.push(H_new);
     }
@@ -256,6 +302,13 @@ Solution Planner::solve(std::string& additional_info)
   additional_info +=
       "optimal=" + std::to_string(H_goal != nullptr && OPEN.empty()) + "\n";
   additional_info += "objective=" + std::to_string(objective) + "\n";
+  if (PRIORITY != PRIO_DIST) {  // default output unchanged
+    std::ostringstream prio;
+    prio << PRIORITY;
+    additional_info += "priority=" + prio.str() + "\n";
+    additional_info +=
+        "target_makespan=" + std::to_string(target_makespan) + "\n";
+  }
   additional_info += "loop_cnt=" + std::to_string(loop_cnt) + "\n";
   additional_info += "num_node_gen=" + std::to_string(EXPLORED.size()) + "\n";
   additional_info += "anytime=" + anytime_log + "\n";
@@ -596,6 +649,18 @@ std::ostream& operator<<(std::ostream& os, const PriorityReset reset)
     os << "final";
   } else if (reset == WP_RESET_EACH) {
     os << "each";
+  }
+  return os;
+}
+
+std::ostream& operator<<(std::ostream& os, const PriorityMode mode)
+{
+  if (mode == PRIO_DIST) {
+    os << "dist";
+  } else if (mode == PRIO_SLACK) {
+    os << "slack";
+  } else if (mode == PRIO_SLACK_RELEASE) {
+    os << "slack_release";
   }
   return os;
 }

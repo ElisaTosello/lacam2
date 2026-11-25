@@ -53,6 +53,12 @@ TEST(STN, wait_on_machine)
       solve(ins, info_m, 0, nullptr, nullptr, Objective::OBJ_MAKESPAN);
   ASSERT_EQ(get_makespan(sol_m), 11);
   ASSERT_EQ(get_info(info_m, "optimal"), "1");
+  auto info_s = std::string();
+  const auto sol_s = solve(ins, info_s, 0, nullptr, nullptr, OBJ_MAKESPAN,
+                           0.001, WP_RESET_EACH, PRIO_SLACK);
+  ASSERT_EQ(get_makespan(sol_s), 11);
+  ASSERT_EQ(get_info(info_s, "optimal"), "1");
+  ASSERT_EQ(get_info(info_s, "target_makespan"), "11");
 
   // the solution without waiting violates the STN
   ins.stn = nullptr;
@@ -128,6 +134,24 @@ TEST(STN, completion_lower_bounds)
     ASSERT_GE(get_path_cost(sol, i), C[i]);
   ASSERT_GE(get_sum_of_loss(ins, sol), 8 + 4 + 6);
 
+  // slack-based order: same optimum, target makespan = max of the bounds
+  auto info_s = std::string();
+  const auto sol_s = solve(ins, info_s, 0, nullptr, nullptr, OBJ_MAKESPAN,
+                           0.001, WP_RESET_EACH, PRIO_SLACK);
+  ASSERT_TRUE(is_feasible_solution(ins, sol_s, 1));
+  ASSERT_EQ(get_makespan(sol_s), 8);
+  ASSERT_EQ(get_info(info_s, "optimal"), "1");
+  ASSERT_EQ(get_info(info_s, "priority"), "slack");
+  ASSERT_EQ(get_info(info_s, "target_makespan"), "8");
+  ASSERT_EQ(get_info(info, "priority"), "");  // default output unchanged
+  auto info_r = std::string();
+  const auto sol_r = solve(ins, info_r, 0, nullptr, nullptr, OBJ_MAKESPAN,
+                           0.001, WP_RESET_EACH, PRIO_SLACK_RELEASE);
+  ASSERT_TRUE(is_feasible_solution(ins, sol_r, 1));
+  ASSERT_EQ(get_makespan(sol_r), 8);
+  ASSERT_EQ(get_info(info_r, "optimal"), "1");
+  ASSERT_EQ(get_info(info_r, "priority"), "slack_release");
+
   // without STN, the usual lower bounds
   ins.stn = nullptr;
   auto D2 = DistTable(ins);
@@ -135,6 +159,124 @@ TEST(STN, completion_lower_bounds)
   ASSERT_EQ(C2, std::vector<int>({6, 4, 2}));
   ASSERT_EQ(get_sum_of_costs_lower_bound(ins, D2), 6 + 4 + 2);
   ASSERT_EQ(get_makespan_lower_bound(ins, D2), 6);
+}
+
+// same instance as completion_lower_bounds: target makespan T* = 8
+static Instance make_chain_ins()
+{
+  auto ins = make_ins({xy(0, 0), xy(7, 7), xy(0, 7)},
+                      {{xy(3, 0), xy(0, 0)},
+                       {xy(7, 5), xy(7, 7)},
+                       {xy(0, 6), xy(0, 7)}});
+  // t(0,0) >= t(1,0) + 3, t(2,0) >= t(0,0)
+  ins.stn = make_stn(ins,
+                     "timepoints 3\n1 0\n0 0\n2 0\n"
+                     "constraints 2\n1 2 3 -\n2 3 0 -\n");
+  return ins;
+}
+
+TEST(STN, waypoint_deadlines)
+{
+  using DL = std::vector<std::vector<int> >;
+  auto ins = make_chain_ins();
+  ASSERT_TRUE(ins.stn->valid) << ins.stn->error;
+  auto D = DistTable(ins);
+  // agent 0 registers by 8 - 3 (it returns in 3); agent 1 by 5 - 3, since
+  // agent 0 registers at least 3 later; agent 2 by 8 - 1
+  ASSERT_EQ(waypoint_deadlines(ins, D, 8), DL({{5, 8}, {2, 8}, {7, 8}}));
+
+  // without STN, T* = 6: the remaining travel only, T* - rem
+  ins.stn = nullptr;
+  ASSERT_EQ(waypoint_deadlines(ins, D, 6), DL({{3, 6}, {4, 6}, {5, 6}}));
+
+  // drop then pickup on the same cell, 5 apart: T* = 11, the pickup by
+  // 11 - 3, the drop by 8 - 5
+  const auto X = xy(3, 0);
+  auto ins2 = make_ins({xy(0, 0)}, {{X, X, xy(0, 0)}});
+  ins2.stn = make_stn(ins2, "timepoints 2\n0 0\n0 1\nconstraints 1\n1 2 5 -\n");
+  ASSERT_TRUE(ins2.stn->valid) << ins2.stn->error;
+  auto D2 = DistTable(ins2);
+  ASSERT_EQ(get_makespan_lower_bound(ins2, D2), 11);
+  ASSERT_EQ(waypoint_deadlines(ins2, D2, 11), DL({{3, 8, 11}}));
+
+  // absolute deadline tighter than T*
+  ins2.stn = make_stn(ins2,
+                      "timepoints 2\n0 0\n0 1\nconstraints 2\n1 2 5 -\n0 1 - 4\n");
+  ASSERT_TRUE(ins2.stn->valid) << ins2.stn->error;
+  ASSERT_EQ(waypoint_deadlines(ins2, D2, 11), DL({{3, 8, 11}}));
+  ins2.stn = make_stn(ins2,
+                      "timepoints 2\n0 0\n0 1\nconstraints 2\n1 2 5 -\n0 1 - 2\n");
+  ASSERT_TRUE(ins2.stn->valid) << ins2.stn->error;
+  ASSERT_EQ(waypoint_deadlines(ins2, D2, 11), DL({{2, 8, 11}}));
+}
+
+// order of the agents along the optimal plan of the chain instance: slack =
+// deadline of the next waypoint - (t + distance to it), agents done last
+TEST(STN, slack_priorities)
+{
+  auto ins = make_chain_ins();
+  ASSERT_TRUE(ins.stn->valid) << ins.stn->error;
+  auto D = DistTable(ins);
+  const auto dl = waypoint_deadlines(ins, D, 8);
+  const float DONE = -1e9;
+  auto config = [&](std::vector<uint> idx) {
+    auto C = Config();
+    for (auto k : idx) C.push_back(ins.G.U[k]);
+    return C;
+  };
+  // configuration at t, slack (or DONE), order; the same with release
+  struct Step {
+    Config C;
+    std::vector<float> slack;
+    std::vector<uint> order;
+    std::vector<float> slack_rel;
+  };
+  const auto steps = std::vector<Step>({
+      // with release, agents 0 and 2 are blocked (predecessor not fired)
+      {config({xy(0, 0), xy(7, 7), xy(0, 7)}), {2, 0, 6}, {1, 0, 2}, {2, 0, 6}},
+      {config({xy(1, 0), xy(7, 6), xy(0, 6)}), {2, 0, 6}, {1, 0, 2}, {2, 0, 6}},
+      // agent 1 registers: deadline of its final goal; with release, agent
+      // 0 cannot register before t = 5, i.e., in 3 steps instead of 1
+      {config({xy(2, 0), xy(7, 5), xy(0, 6)}), {2, 4, 5}, {0, 1, 2}, {0, 4, 5}},
+      // agents 1 and 2 tie: order of the parent
+      {config({xy(3, 0), xy(7, 6), xy(0, 6)}), {2, 4, 4}, {0, 1, 2}, {0, 4, 4}},
+      // waiting agents lose one per step, not with a known release (agent 0)
+      {config({xy(3, 0), xy(7, 7), xy(0, 6)}), {1, DONE, 3}, {0, 2, 1},
+       {0, DONE, 3}},
+      // agents 0 and 2 register
+      {config({xy(3, 0), xy(7, 7), xy(0, 6)}), {0, DONE, 2}, {0, 2, 1},
+       {0, DONE, 2}},
+  });
+
+  for (bool release : {false, true}) {
+    auto K = std::vector<uint>();
+    auto W = Windows();
+    ASSERT_TRUE(initial_state(ins, K, W));
+    auto nodes = std::vector<std::unique_ptr<HNode> >();
+    for (uint t = 0; t < steps.size(); ++t) {
+      if (t > 0) ASSERT_TRUE(advance_state(ins, steps[t].C, K, W));
+      prune_windows(ins, D, steps[t].C, K, W);  // as in the planner
+      HNode* parent = t > 0 ? nodes.back().get() : nullptr;
+      nodes.emplace_back(new HNode(steps[t].C, K, W, &ins, D, parent, t, 0,
+                                   WP_RESET_EACH, &dl, release));
+      const auto H = nodes.back().get();
+      ASSERT_EQ(H->t, t);
+      auto slack = H->priorities;
+      for (auto& s : slack)
+        if (s != DONE) s = -s;
+      ASSERT_EQ(slack, release ? steps[t].slack_rel : steps[t].slack)
+          << "t=" << t << " release=" << release;
+      ASSERT_EQ(H->order, steps[t].order) << "t=" << t;
+    }
+    ASSERT_EQ(K, std::vector<uint>({1, 1, 1}));  // all registered at t = 5
+  }
+
+  // distance-based at the root: the longest way to go first
+  auto K0 = std::vector<uint>();
+  auto W0 = Windows();
+  initial_state(ins, K0, W0);
+  const auto H0 = HNode(ins.starts, K0, W0, &ins, D, nullptr, 0, 0);
+  ASSERT_EQ(H0.order, std::vector<uint>({0, 1, 2}));
 }
 
 TEST(STN, deadlines)
@@ -264,17 +406,21 @@ TEST(STN, random_chain)
     ins.stn = make_stn(ins, text);
     ASSERT_TRUE(ins.stn->valid) << ins.stn->error;
 
-    auto info = std::string();
-    const auto deadline = Deadline(5000);
-    const auto sol = solve(ins, info, 0, &deadline, &MT);
-    ASSERT_FALSE(sol.empty()) << "seed=" << seed;
-    ASSERT_TRUE(is_feasible_solution(ins, sol, 1));
+    for (auto prio : {PRIO_DIST, PRIO_SLACK, PRIO_SLACK_RELEASE}) {
+      auto info = std::string();
+      const auto deadline = Deadline(5000);
+      const auto sol = solve(ins, info, 0, &deadline, &MT, OBJ_NONE, 0.001,
+                             WP_RESET_EACH, prio);
+      ASSERT_FALSE(sol.empty()) << "seed=" << seed << " priority=" << prio;
+      ASSERT_TRUE(is_feasible_solution(ins, sol, 1));
 
-    auto info_m = std::string();
-    const auto deadline_m = Deadline(1000);
-    const auto sol_m = solve(ins, info_m, 0, &deadline_m, &MT, OBJ_MAKESPAN);
-    ASSERT_TRUE(is_feasible_solution(ins, sol_m, 1));
-    auto D = DistTable(ins);
-    ASSERT_GE(get_makespan(sol_m), get_makespan_lower_bound(ins, D));
+      auto info_m = std::string();
+      const auto deadline_m = Deadline(1000);
+      const auto sol_m = solve(ins, info_m, 0, &deadline_m, &MT, OBJ_MAKESPAN,
+                               0.001, WP_RESET_EACH, prio);
+      ASSERT_TRUE(is_feasible_solution(ins, sol_m, 1));
+      auto D = DistTable(ins);
+      ASSERT_GE(get_makespan(sol_m), get_makespan_lower_bound(ins, D));
+    }
   }
 }

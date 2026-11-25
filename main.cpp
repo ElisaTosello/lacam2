@@ -33,6 +33,19 @@ int main(int argc, char* argv[])
         if (value == "final" || value == "each") return value;
         throw std::runtime_error("--wp_priority_reset: final or each");
       });
+  program.add_argument("--priority")
+      .help(
+          "PIBT order of the agents: dist (distance to go, elevated each "
+          "step) | slack (deadline of the next waypoint w.r.t. the target "
+          "makespan, max of the completion lower bounds, minus the earliest "
+          "arrival there) | slack_release (as slack, the arrival also waits "
+          "for the release of the next event when known)")
+      .default_value(std::string("dist"))
+      .action([](const std::string& value) {
+        if (value == "dist" || value == "slack" || value == "slack_release")
+          return value;
+        throw std::runtime_error("--priority: dist, slack or slack_release");
+      });
   program.add_argument("-N", "--num").help("number of agents").required();
   program.add_argument("-s", "--seed")
       .help("seed")
@@ -92,6 +105,10 @@ int main(int argc, char* argv[])
       program.get<std::string>("wp_priority_reset") == "final"
           ? WP_RESET_FINAL
           : WP_RESET_EACH;
+  const auto priority_name = program.get<std::string>("priority");
+  const auto priority = priority_name == "slack"           ? PRIO_SLACK
+                        : priority_name == "slack_release" ? PRIO_SLACK_RELEASE
+                                                           : PRIO_DIST;
   const auto stn_name = program.get<std::string>("stn");
   const auto private_depot = program.get<bool>("wp_private_depot");
   auto ins =
@@ -124,7 +141,7 @@ int main(int argc, char* argv[])
   const auto mem_limit_mb = std::stod(program.get<std::string>("mem_limit_mb"));
   const auto deadline = Deadline(time_limit_sec * 1000, mem_limit_mb);
   const auto solution = solve(ins, additional_info, verbose - 1, &deadline, &MT,
-                              objective, restart_rate, wp_reset);
+                              objective, restart_rate, wp_reset, priority);
   const auto comp_time_ms = deadline.elapsed_ms();
 
   // failure
